@@ -33,3 +33,14 @@ Thumbs.db
 
 # Model cache (too large for git)
 models/
+
+# Markdown files except README
+*.md
+!README.md
+
+# PDF and LaTeX
+*.pdf
+*.tex
+
+# Progress report folder
+progress_report/
