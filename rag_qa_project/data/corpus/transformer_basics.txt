@@ -1,0 +1,7 @@
+Transformer Basics for CDS547
+
+Self-attention maps each token to a weighted combination of other tokens in the sequence. Multi-head attention runs several attention functions in parallel. Vaswani et al. (2017) proposed the Transformer encoder-decoder architecture.
+
+BERT (Devlin et al., 2019) uses masked language modeling and next-sentence prediction for bidirectional context. GPT-style models use causal (left-to-right) attention for generative pre-training.
+
+Few-shot learning with large LMs (Brown et al., 2020) shows that in-context examples in the prompt can substitute for gradient updates on small tasks, though performance varies by task and model scale.
