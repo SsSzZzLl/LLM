@@ -1,5 +1,0 @@
-{"question": "What does RAG condition the generator on?", "gold_answer": "retrieved passages from a document collection"}
-{"question": "Who introduced RAG for knowledge-intensive tasks according to the notes?", "gold_answer": "Lewis et al."}
-{"question": "What architecture did Vaswani et al. propose in 2017?", "gold_answer": "Transformer encoder-decoder architecture"}
-{"question": "What is hallucination in the context of LLM evaluation?", "gold_answer": "fluent but unsupported claims"}
-{"question": "What should teams document for reproducibility?", "gold_answer": "model names, dates, and temperature settings"}
