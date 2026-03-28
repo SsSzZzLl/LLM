@@ -10,7 +10,7 @@ def read_text_file(path: Path) -> str:
     return path.read_text(encoding="utf-8", errors="replace")
 
 
-def load_corpus(corpus_dir: Path, max_chars: int, overlap_chars: int) -> List[Chunk]:
+def load_corpus(corpus_dir: Path, max_tokens: int, overlap_tokens: int, model_name: str = "cl100k_base") -> List[Chunk]:
     corpus_dir = corpus_dir.resolve()
     if not corpus_dir.is_dir():
         raise FileNotFoundError(f"Corpus directory not found: {corpus_dir}")
@@ -20,5 +20,5 @@ def load_corpus(corpus_dir: Path, max_chars: int, overlap_chars: int) -> List[Ch
         if p.is_file() and p.suffix.lower() in {".txt", ".md"}:
             text = read_text_file(p)
             source_id = str(p.relative_to(corpus_dir)).replace("\\", "/")
-            all_chunks.extend(chunk_document(text, source_id, max_chars, overlap_chars))
+            all_chunks.extend(chunk_document(text, source_id, max_tokens, overlap_tokens, model_name))
     return all_chunks

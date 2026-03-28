@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import pickle
 import re
+import jieba
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List
@@ -23,7 +24,10 @@ class ChunkRecord:
 
 
 def tokenize(s: str) -> List[str]:
-    return re.findall(r"[a-zA-Z0-9]+", s.lower())
+    if any('\u4e00' <= char <= '\u9fff' for char in s):
+        return list(jieba.cut(s.lower()))
+    else:
+        return re.findall(r"[a-zA-Z0-9]+", s.lower())
 
 
 class DocumentIndex:
@@ -35,11 +39,13 @@ class DocumentIndex:
         bm25: BM25Okapi,
         dense: np.ndarray | None,
         embedding_model_name: str,
+        embedding_model = None,
     ) -> None:
         self.records = records
         self.bm25 = bm25
         self.dense = dense
         self.embedding_model_name = embedding_model_name
+        self.embedding_model = embedding_model
 
     @classmethod
     def build(
@@ -52,12 +58,13 @@ class DocumentIndex:
         bm25 = BM25Okapi(tokenized)
 
         dense = None
+        embedding_model = None
         if embedding_model_name:
             from sentence_transformers import SentenceTransformer
 
-            model = SentenceTransformer(embedding_model_name)
+            embedding_model = SentenceTransformer(embedding_model_name)
             texts = [r.text for r in records]
-            dense = model.encode(
+            dense = embedding_model.encode(
                 texts,
                 batch_size=encode_batch_size,
                 show_progress_bar=len(texts) > 50,
@@ -65,7 +72,13 @@ class DocumentIndex:
                 normalize_embeddings=True,
             )
 
-        return cls(records=records, bm25=bm25, dense=dense, embedding_model_name=embedding_model_name)
+        return cls(
+            records=records,
+            bm25=bm25,
+            dense=dense,
+            embedding_model_name=embedding_model_name,
+            embedding_model=embedding_model,
+        )
 
     def save(self, index_dir: Path) -> None:
         index_dir.mkdir(parents=True, exist_ok=True)
@@ -91,11 +104,19 @@ class DocumentIndex:
             bm25: BM25Okapi = pickle.load(f)
         dense_path = index_dir / "dense.npy"
         dense = np.load(dense_path) if dense_path.exists() else None
+        
+        embedding_model_name = meta.get("embedding_model_name", "")
+        embedding_model = None
+        if embedding_model_name:
+            from sentence_transformers import SentenceTransformer
+            embedding_model = SentenceTransformer(embedding_model_name)
+
         return cls(
             records=records,
             bm25=bm25,
             dense=dense,
-            embedding_model_name=meta.get("embedding_model_name", ""),
+            embedding_model_name=embedding_model_name,
+            embedding_model=embedding_model,
         )
 
 

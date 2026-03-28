@@ -4,13 +4,14 @@ corpus_dir: data/corpus
 index_dir: data/index
 
 chunking:
-  max_chars: 900
-  overlap_chars: 120
+  max_tokens: 256
+  overlap_tokens: 30
+  model_name: cl100k_base
 
 retrieval:
   top_k: 5
   # dense | bm25 | hybrid (weighted sum of normalized scores)
-  mode: dense
+  mode: hybrid
   hybrid_bm25_weight: 0.35
 
 embedding:

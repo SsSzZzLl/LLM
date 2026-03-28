@@ -19,7 +19,8 @@ def retrieve(
     query: str,
     top_k: int,
     mode: RetrievalMode,
-    hybrid_bm25_weight: float = 0.35,
+    hybrid_bm25_weight: float = 0.35, # This parameter will be ignored for RRF, but kept for compatibility
+    rrf_k: int = 60, # Add rrf_k parameter
 ) -> List[Tuple[ChunkRecord, float]]:
     if top_k <= 0:
         return []
@@ -30,32 +31,54 @@ def retrieve(
 
     q_tokens = tokenize(query)
     bm25_scores = np.array(index.bm25.get_scores(q_tokens), dtype=np.float64)
-    bm25_norm = _minmax(bm25_scores) if mode in ("bm25", "hybrid") else None
 
     dense_scores = None
-    dense_norm = None
     if mode in ("dense", "hybrid") and index.dense is not None:
-        from sentence_transformers import SentenceTransformer
-
-        model = SentenceTransformer(index.embedding_model_name)
-        qv = model.encode([query], convert_to_numpy=True, normalize_embeddings=True)[0]
+        if index.embedding_model is None:
+            raise ValueError("Dense retrieval requested but embedding model is not loaded in DocumentIndex.")
+        qv = index.embedding_model.encode([query], convert_to_numpy=True, normalize_embeddings=True)[0]
         dense_scores = _dense_scores(qv, index.dense)
-        dense_norm = _minmax(dense_scores)
 
     if mode == "bm25":
-        combined = bm25_norm
+        combined_scores = bm25_scores
+        order = np.argsort(-combined_scores)[:top_k]
     elif mode == "dense":
-        if dense_norm is None:
+        if dense_scores is None:
             raise ValueError("Dense retrieval requested but index has no dense vectors.")
-        combined = dense_norm
-    else:
-        if dense_norm is None or bm25_norm is None:
+        combined_scores = dense_scores
+        order = np.argsort(-combined_scores)[:top_k]
+    else: # mode == "hybrid"
+        if dense_scores is None:
             raise ValueError("Hybrid requires both BM25 and dense index.")
-        w = hybrid_bm25_weight
-        combined = w * bm25_norm + (1.0 - w) * dense_norm
+        
+        bm25_ranks = np.argsort(-bm25_scores).tolist()
+        dense_ranks = np.argsort(-dense_scores).tolist()
 
-    order = np.argsort(-combined)[:top_k]
-    return [(index.records[int(i)], float(combined[int(i)])) for i in order]
+        fused_indices = rrf([bm25_ranks, dense_ranks], k=rrf_k)
+        
+        order = fused_indices[:top_k]
+        
+        combined_scores = np.zeros(n)
+        for rank, doc_idx in enumerate(order):
+            combined_scores[doc_idx] = 1.0 - (rank / len(order)) 
+
+    return [(index.records[int(i)], float(combined_scores[int(i)])) for i in order]
+
+
+def rrf(rank_lists: List[List[int]], k: int = 60) -> List[int]:
+    """
+    Reciprocal Rank Fusion (RRF) algorithm.
+    rank_lists: A list of lists, where each inner list contains document indices ordered by rank.
+    k: A constant to control the contribution of individual ranks.
+    """
+    fused_scores = {}
+    for rank_list in rank_lists:
+        for rank, doc_idx in enumerate(rank_list):
+            fused_scores[doc_idx] = fused_scores.get(doc_idx, 0) + 1 / (k + rank + 1) # rank is 0-indexed, so add 1
+
+    # Sort documents by their fused scores in descending order
+    sorted_docs = sorted(fused_scores.items(), key=lambda item: item[1], reverse=True)
+    return [doc_idx for doc_idx, _ in sorted_docs]
 
 
 def _minmax(x: np.ndarray) -> np.ndarray:

@@ -143,8 +143,9 @@ def build_index_from_corpus(cfg: Optional[Dict[str, Any]] = None) -> Path:
 
     chunks = load_corpus(
         corpus_dir,
-        max_chars=int(ch.get("max_chars", 900)),
-        overlap_chars=int(ch.get("overlap_chars", 120)),
+        max_tokens=int(ch.get("max_tokens", 256)),
+        overlap_tokens=int(ch.get("overlap_tokens", 30)),
+        model_name=str(ch.get("model_name", "cl100k_base")),
     )
     records = records_from_chunks(chunks)
     index = DocumentIndex.build(
