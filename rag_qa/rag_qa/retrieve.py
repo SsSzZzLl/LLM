@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import List, Literal, Tuple
+from typing import Dict, List, Literal, Tuple
 
 import numpy as np
 
@@ -8,10 +8,24 @@ from rag_qa.index_store import ChunkRecord, DocumentIndex, tokenize
 
 RetrievalMode = Literal["dense", "bm25", "hybrid"]
 
+_MODEL_CACHE: Dict[str, object] = {}
+
 
 def _dense_scores(query_vec: np.ndarray, matrix: np.ndarray) -> np.ndarray:
     """Cosine similarity for L2-normalized rows."""
     return matrix @ query_vec
+
+
+def _get_embedding_model(model_name: str):
+    from sentence_transformers import SentenceTransformer
+
+    if model_name not in _MODEL_CACHE:
+        # 优先使用本地缓存，避免每次联网检查
+        _MODEL_CACHE[model_name] = SentenceTransformer(
+            model_name,
+            local_files_only=True,
+        )
+    return _MODEL_CACHE[model_name]
 
 
 def retrieve(
@@ -34,9 +48,12 @@ def retrieve(
 
     dense_scores = None
     if mode in ("dense", "hybrid") and index.dense is not None:
-        if index.embedding_model is None:
-            raise ValueError("Dense retrieval requested but embedding model is not loaded in DocumentIndex.")
-        qv = index.embedding_model.encode([query], convert_to_numpy=True, normalize_embeddings=True)[0]
+        model = _get_embedding_model(index.embedding_model_name)
+        qv = model.encode(
+            [query],
+            convert_to_numpy=True,
+            normalize_embeddings=True,
+        )[0]
         dense_scores = _dense_scores(qv, index.dense)
 
     if mode == "bm25":

@@ -16,10 +16,8 @@ from rag_qa.prompts import (
     rag_system_prompt,
     rag_user_prompt,
 )
-from rag_qa.retrieve import retrieve
-
 # Import new Agent framework components
-from rag_qa.agents import AgentInput, AgentOutput, RouteAgent, QuestionComplexity
+from rag_qa.agents import AgentInput, RetrievalAgent, RouteAgent, QuestionComplexity
 
 logger = logging.getLogger(__name__)
 
@@ -50,9 +48,9 @@ class MultiAgentOrchestrator:
             model=g_cfg.get("openai_model"),
             temperature=float(g_cfg.get("temperature", 0.1)),
         )
-        
+        self.retrieval_agent = RetrievalAgent.from_config(self.index, self.cfg)
+
         # Placeholder for future agents:
-        # self.retrieval_agent = RetrievalAgent(...)
         # self.reasoning_agent = ReasoningAgent(...)
         # self.synthesis_agent = SynthesisAgent(...)
 
@@ -79,6 +77,10 @@ class MultiAgentOrchestrator:
             decision = None
             complexity = QuestionComplexity.MODERATE
             strategy = "single_hop_rag (routing disabled)"
+            route_config = {
+                "use_multi_hop": False,
+                "strategy_name": strategy,
+            }
         else:
             decision, route_config = self.route_agent.route(question)
             complexity = decision.complexity
@@ -107,17 +109,20 @@ class MultiAgentOrchestrator:
         else:
             prefix = ""
 
-        # Default standard retrieval (MODERATE / fallback for COMPLEX)
-        # TODO: Replace with self.retrieval_agent.run() and self.synthesis_agent.run() in future PRs.
-        hits = retrieve(
-            self.index,
-            question,
-            top_k=top_k,
-            mode=mode,
-            hybrid_bm25_weight=hybrid_w,
+        # Default standard retrieval (MODERATE / fallback for COMPLEX) via RetrievalAgent
+        retrieval_in = AgentInput(
+            question=question,
+            metadata={
+                "top_k": top_k,
+                "mode": mode,
+                "hybrid_bm25_weight": hybrid_w,
+                "complexity": complexity.value,
+                "use_multi_hop": bool(route_config.get("use_multi_hop", False)),
+            },
         )
-        passages = [(h[0].stable_id, h[0].text) for h in hits]
-        scores = [h[1] for h in hits]
+        retrieval_out = self.retrieval_agent.run(retrieval_in)
+        passages = retrieval_out.metadata.get("passages", [])
+        scores = retrieval_out.metadata.get("scores", [])
         ctx = format_context_passages(passages)
         ans = generate_chat(
             rag_system_prompt(),
