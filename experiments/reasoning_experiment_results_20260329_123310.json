@@ -1,0 +1,158 @@
+{
+  "metadata": {
+    "timestamp": "2026-03-29T12:33:10.195995",
+    "agent_config": {
+      "confidence_threshold": 0.7,
+      "max_retries": 2
+    }
+  },
+  "experiments": [
+    {
+      "experiment": "decomposition",
+      "results": [
+        {
+          "test_id": 1,
+          "question": "What is the capital of France?",
+          "type": "simple",
+          "expected_hops": 1,
+          "actual_hops": 1,
+          "num_sub_questions": 1,
+          "reasoning_plan": "Parse error: Expecting value: line 1 column 2 (char 1). Using fallback.",
+          "elapsed_time": 0.00013494491577148438
+        },
+        {
+          "test_id": 2,
+          "question": "What is the relationship between RAG and transformer architecture?",
+          "type": "moderate",
+          "expected_hops": 2,
+          "actual_hops": 1,
+          "num_sub_questions": 1,
+          "reasoning_plan": "Parse error: Expecting value: line 1 column 2 (char 1). Using fallback.",
+          "elapsed_time": 6.723403930664062e-05
+        },
+        {
+          "test_id": 3,
+          "question": "Compare the approaches of RAG and traditional fine-tuning for knowledge-intensive tasks, and explain which is more suitable for small teams.",
+          "type": "complex",
+          "expected_hops": 3,
+          "actual_hops": 1,
+          "num_sub_questions": 1,
+          "reasoning_plan": "Parse error: Expecting value: line 1 column 2 (char 1). Using fallback.",
+          "elapsed_time": 3.600120544433594e-05
+        },
+        {
+          "test_id": 4,
+          "question": "How does the attention mechanism in transformers enable RAG systems to better retrieve relevant information?",
+          "type": "complex",
+          "expected_hops": 3,
+          "actual_hops": 1,
+          "num_sub_questions": 1,
+          "reasoning_plan": "Parse error: Expecting value: line 1 column 2 (char 1). Using fallback.",
+          "elapsed_time": 3.743171691894531e-05
+        }
+      ],
+      "summary": {
+        "avg_sub_questions": 1.0,
+        "avg_time": 6.890296936035156e-05
+      }
+    },
+    {
+      "experiment": "self_reflection",
+      "results": [
+        {
+          "test_id": 1,
+          "question": "What is 2+2?",
+          "answer": "2+2 equals 4.",
+          "expected_satisfactory": true,
+          "actual_satisfactory": false,
+          "confidence": 0.3,
+          "should_retry": true,
+          "issues": [
+            "Parse error: Expecting value: line 1 column 2 (char 1)"
+          ],
+          "suggestions": [
+            "Review manually"
+          ]
+        },
+        {
+          "test_id": 2,
+          "question": "What is the capital of France?",
+          "answer": "The capital of France is Paris.",
+          "expected_satisfactory": true,
+          "actual_satisfactory": false,
+          "confidence": 0.3,
+          "should_retry": true,
+          "issues": [
+            "Parse error: Expecting value: line 1 column 2 (char 1)"
+          ],
+          "suggestions": [
+            "Review manually"
+          ]
+        },
+        {
+          "test_id": 3,
+          "question": "Explain quantum computing.",
+          "answer": "Quantum computing uses qubits.",
+          "expected_satisfactory": false,
+          "actual_satisfactory": false,
+          "confidence": 0.3,
+          "should_retry": true,
+          "issues": [
+            "Parse error: Expecting value: line 1 column 2 (char 1)"
+          ],
+          "suggestions": [
+            "Review manually"
+          ]
+        }
+      ],
+      "summary": {
+        "accuracy": 0.3333333333333333,
+        "avg_confidence": 0.3
+      }
+    },
+    {
+      "experiment": "multi_hop_qa",
+      "results": [
+        {
+          "test_id": 1,
+          "question": "What is the relationship between transformers and BERT?",
+          "requires_hops": 2,
+          "answer": "[MOCK — set OPENAI_API_KEY for real LLM output] The pipeline ran without an API key. Retrieved context was passed in the user message; for the course demo, configure .env and re-run. Preview of prompt...",
+          "confidence": 0.3,
+          "should_retry": true,
+          "num_evidence": 0,
+          "elapsed_time": 0.00011968612670898438
+        },
+        {
+          "test_id": 2,
+          "question": "How does RAG improve upon traditional language models?",
+          "requires_hops": 2,
+          "answer": "[MOCK — set OPENAI_API_KEY for real LLM output] The pipeline ran without an API key. Retrieved context was passed in the user message; for the course demo, configure .env and re-run. Preview of prompt...",
+          "confidence": 0.3,
+          "should_retry": true,
+          "num_evidence": 0,
+          "elapsed_time": 9.226799011230469e-05
+        }
+      ],
+      "summary": {
+        "avg_confidence": 0.3,
+        "avg_time": 0.00010597705841064453
+      }
+    },
+    {
+      "experiment": "retry_mechanism",
+      "results": [
+        {
+          "question": "Explain the attention mechanism in detail.",
+          "attempt_1_confidence": 0.3,
+          "attempt_1_should_retry": true,
+          "attempt_2_confidence": 0.3,
+          "retry_count": 1
+        }
+      ],
+      "summary": {
+        "retry_triggered": true
+      }
+    }
+  ]
+}
