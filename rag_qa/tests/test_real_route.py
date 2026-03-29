@@ -1,12 +1,18 @@
 """
-Route Agent 真实 API 测试
-使用实际的 LLM 进行问题复杂度分类
+Route Agent 真实 API 测试 - 使用 OpenRouter
 """
 import os
-from dotenv import load_dotenv
+import sys
 
-# 加载环境变量
-load_dotenv()
+# 直接从文件读取配置
+with open('.env', 'r', encoding='utf-8') as f:
+    lines = f.readlines()
+    
+for line in lines:
+    line = line.strip()
+    if line and not line.startswith('#') and '=' in line:
+        key, value = line.split('=', 1)
+        os.environ[key] = value
 
 from rag_qa.agents.route_agent import RouteAgent, QuestionComplexity
 
@@ -14,9 +20,10 @@ from rag_qa.agents.route_agent import RouteAgent, QuestionComplexity
 def test_real_classification():
     """使用真实 LLM 进行分类测试"""
     print("=" * 70)
-    print("Route Agent - 真实 LLM 分类测试")
+    print("Route Agent - 真实 LLM 分类测试 (OpenRouter)")
     print("=" * 70)
-    print(f"\n使用模型: {os.getenv('OPENAI_MODEL', 'gpt-4o-mini')}")
+    print(f"\n使用模型: {os.getenv('OPENAI_MODEL')}")
+    print(f"API: {os.getenv('OPENAI_BASE_URL')}")
     print("-" * 70)
     
     agent = RouteAgent()
@@ -24,56 +31,71 @@ def test_real_classification():
     # 测试问题集
     test_questions = [
         # SIMPLE - 简单事实
-        "What is 2+2?",
-        "Who wrote Romeo and Juliet?",
+        ("What is 2+2?", QuestionComplexity.SIMPLE),
+        ("Who wrote Romeo and Juliet?", QuestionComplexity.SIMPLE),
         
         # MODERATE - 需要检索
-        "What does RAG condition the generator on?",
-        "What architecture did Vaswani et al. propose in 2017?",
+        ("What does RAG condition the generator on?", QuestionComplexity.MODERATE),
+        ("What architecture did Vaswani et al. propose in 2017?", QuestionComplexity.MODERATE),
         
         # COMPLEX - 需要推理
-        "Compare the RAG approach by Lewis et al. with the transformer architecture by Vaswani et al.",
-        "What are the trade-offs between using dense retrieval versus BM25 in multi-hop question answering?",
+        ("Compare the RAG approach by Lewis et al. with the transformer architecture by Vaswani et al.", QuestionComplexity.COMPLEX),
+        ("What are the trade-offs between using dense retrieval versus BM25 in multi-hop question answering?", QuestionComplexity.COMPLEX),
     ]
     
     results = []
-    for question in test_questions:
-        print(f"\n❓ 问题: {question}")
+    correct = 0
+    
+    for question, expected in test_questions:
+        print(f"\n问题: {question}")
+        print(f"   期望复杂度: {expected.value}")
         
         try:
-            decision, config = agent.route(question)
+            decision = agent.classify(question)
+            strategy = agent.ROUTING_STRATEGIES[decision.complexity]
             
-            print(f"   ├─ 复杂度: {decision.complexity.value.upper()}")
-            print(f"   ├─ 置信度: {decision.confidence:.1%}")
-            print(f"   ├─ 策略: {config['name']}")
-            print(f"   ├─ 使用检索: {'✓' if config['use_retrieval'] else '✗'}")
-            print(f"   ├─ 多跳推理: {'✓' if config['use_multi_hop'] else '✗'}")
-            print(f"   └─ LLM 推理: {decision.reasoning}")
+            is_correct = decision.complexity == expected
+            if is_correct:
+                correct += 1
+                status = "OK"
+            else:
+                status = "XX"
+            
+            print(f"   [{status}] 预测: {decision.complexity.value.upper()}")
+            print(f"   置信度: {decision.confidence:.1%}")
+            print(f"   策略: {strategy['name']}")
+            print(f"   检索: {'Y' if strategy['use_retrieval'] else 'N'} | 多跳: {'Y' if strategy['use_multi_hop'] else 'N'}")
+            print(f"   推理: {decision.reasoning[:60]}...")
             
             results.append({
                 'question': question,
-                'complexity': decision.complexity.value,
+                'expected': expected.value,
+                'predicted': decision.complexity.value,
+                'correct': is_correct,
                 'confidence': decision.confidence,
-                'strategy': config['name'],
-                'use_retrieval': config['use_retrieval'],
-                'use_multi_hop': config['use_multi_hop'],
             })
             
         except Exception as e:
-            print(f"   └─ ❌ 错误: {e}")
+            import traceback
+            print(f"   [ERR] {e}")
+            traceback.print_exc()
     
     # 统计结果
     print("\n" + "=" * 70)
     print("分类统计")
     print("=" * 70)
     
-    simple_count = sum(1 for r in results if r['complexity'] == 'simple')
-    moderate_count = sum(1 for r in results if r['complexity'] == 'moderate')
-    complex_count = sum(1 for r in results if r['complexity'] == 'complex')
+    accuracy = correct / len(test_questions) if test_questions else 0
+    print(f"\n准确率: {accuracy:.1%} ({correct}/{len(test_questions)})")
     
-    print(f"\nSIMPLE (直接生成):   {simple_count} 个")
-    print(f"MODERATE (单跳检索): {moderate_count} 个")
-    print(f"COMPLEX (多跳推理):  {complex_count} 个")
+    simple_count = sum(1 for r in results if r['predicted'] == 'simple')
+    moderate_count = sum(1 for r in results if r['predicted'] == 'moderate')
+    complex_count = sum(1 for r in results if r['predicted'] == 'complex')
+    
+    print(f"\n分类分布:")
+    print(f"  SIMPLE:   {simple_count} 个")
+    print(f"  MODERATE: {moderate_count} 个")
+    print(f"  COMPLEX:  {complex_count} 个")
     
     avg_confidence = sum(r['confidence'] for r in results) / len(results) if results else 0
     print(f"\n平均置信度: {avg_confidence:.1%}")
@@ -81,64 +103,17 @@ def test_real_classification():
     return results
 
 
-def test_single_question(question: str):
-    """测试单个问题"""
-    print("\n" + "=" * 70)
-    print("单问题测试")
-    print("=" * 70)
-    
-    agent = RouteAgent()
-    
-    print(f"\n问题: {question}")
-    print("-" * 70)
-    
-    try:
-        decision, config = agent.route(question)
-        
-        print(f"\n📊 分类结果:")
-        print(f"   复杂度级别: {decision.complexity.value.upper()}")
-        print(f"   置信度: {decision.confidence:.1%}")
-        print(f"   推荐策略: {decision.recommended_strategy}")
-        
-        print(f"\n🔧 路由配置:")
-        print(f"   策略名称: {config['name']}")
-        print(f"   策略描述: {config['description']}")
-        print(f"   启用检索: {config['use_retrieval']}")
-        print(f"   多跳推理: {config['use_multi_hop']}")
-        
-        print(f"\n💭 LLM 推理过程:")
-        print(f"   {decision.reasoning}")
-        
-        print(f"\n📋 建议执行流程:")
-        if not config['use_retrieval']:
-            print("   → Direct Generation Agent")
-        elif not config['use_multi_hop']:
-            print("   → Retrieval Agent → Synthesis Agent")
-        else:
-            print("   → Reasoning Agent → Retrieval Agent (迭代) → Synthesis Agent")
-            
-    except Exception as e:
-        print(f"\n❌ 错误: {e}")
-
-
 if __name__ == "__main__":
     # 检查 API Key
     api_key = os.getenv("OPENAI_API_KEY", "").strip()
     if not api_key:
-        print("❌ 错误: 未找到 OPENAI_API_KEY")
-        print("请在 .env 文件中配置 API Key")
-        exit(1)
+        print("错误: 未找到 API Key")
+        sys.exit(1)
     
-    print(f"✓ API Key 已配置: {api_key[:20]}...")
+    print(f"API Key: {api_key[:20]}...")
     
-    # 运行批量测试
+    # 运行测试
     results = test_real_classification()
-    
-    # 测试自定义问题（可选）
-    print("\n" + "=" * 70)
-    custom = input("\n输入自定义问题测试（直接回车跳过）: ").strip()
-    if custom:
-        test_single_question(custom)
     
     print("\n" + "=" * 70)
     print("测试完成!")
