@@ -1,0 +1,9 @@
+# CDS547 RAG project — Python 3.10+
+numpy>=1.24
+tqdm>=4.66
+pyyaml>=6.0
+python-dotenv>=1.0
+openai>=1.12
+rank-bm25>=0.2.2
+sentence-transformers>=2.2.0
+torch>=2.0
