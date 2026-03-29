@@ -22,8 +22,9 @@ def generate_chat(
 
     from openai import OpenAI
 
-    client = OpenAI(api_key=api_key)
-    m = model or os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+    base_url = os.getenv("OPENAI_BASE_URL")
+    client = OpenAI(api_key=api_key, base_url=base_url) if base_url else OpenAI(api_key=api_key)
+    m = model or os.getenv("OPENAI_MODEL", "openai/gpt-3.5-turbo")
     resp = client.chat.completions.create(
         model=m,
         temperature=temperature,

@@ -17,7 +17,7 @@ from rag_qa.prompts import (
     rag_user_prompt,
 )
 # Import new Agent framework components
-from rag_qa.agents import AgentInput, RetrievalAgent, RouteAgent, QuestionComplexity
+from rag_qa.agents import AgentInput, RetrievalAgent, RouteAgent, QuestionComplexity, ReasoningAgent, SynthesisAgent
 
 logger = logging.getLogger(__name__)
 
@@ -49,10 +49,18 @@ class MultiAgentOrchestrator:
             temperature=float(g_cfg.get("temperature", 0.1)),
         )
         self.retrieval_agent = RetrievalAgent.from_config(self.index, self.cfg)
-
-        # Placeholder for future agents:
-        # self.reasoning_agent = ReasoningAgent(...)
-        # self.synthesis_agent = SynthesisAgent(...)
+        
+        self.synthesis_agent = SynthesisAgent(
+            model=g_cfg.get("openai_model"),
+            temperature=float(g_cfg.get("temperature", 0.2)),
+            max_tokens=int(g_cfg.get("max_tokens", 512)),
+        )
+        
+        self.reasoning_agent = ReasoningAgent(
+            model=g_cfg.get("openai_model"),
+            temperature=float(g_cfg.get("temperature", 0.2)),
+            max_tokens=int(g_cfg.get("max_tokens", 1024)),
+        )
 
     @classmethod
     def from_disk(cls, cfg: Optional[Dict[str, Any]] = None) -> "MultiAgentOrchestrator":
@@ -102,40 +110,49 @@ class MultiAgentOrchestrator:
                 routing_strategy=strategy, complexity=complexity.value
             )
             
-        elif complexity == QuestionComplexity.COMPLEX:
-            # Placeholder for Multi-hop ReasoningAgent.
-            # Currently falls back to standard single-hop RAG with a note.
-            prefix = "[Note: Question classified as COMPLEX, but Multi-hop Reasoning Agent is WIP. Falling back to standard RAG.]\n\n"
-        else:
-            prefix = ""
-
-        # Default standard retrieval (MODERATE / fallback for COMPLEX) via RetrievalAgent
+        # Retrieval Phase (handles both MODERATE and COMPLEX dynamically)
+        is_complex = (complexity == QuestionComplexity.COMPLEX)
+        use_multi_hop = bool(route_config.get("use_multi_hop", False))
+        
         retrieval_in = AgentInput(
             question=question,
             metadata={
                 "top_k": top_k,
                 "mode": mode,
                 "hybrid_bm25_weight": hybrid_w,
-                "complexity": complexity.value,
-                "use_multi_hop": bool(route_config.get("use_multi_hop", False)),
+                "complexity": complexity.value if decision else "moderate",
+                "use_multi_hop": use_multi_hop,
             },
         )
         retrieval_out = self.retrieval_agent.run(retrieval_in)
         passages = retrieval_out.metadata.get("passages", [])
         scores = retrieval_out.metadata.get("scores", [])
-        ctx = format_context_passages(passages)
-        ans = generate_chat(
-            rag_system_prompt(),
-            rag_user_prompt(question, ctx),
-            model=g_cfg.get("openai_model"),
-            temperature=float(g_cfg.get("temperature", 0.2)),
-            max_tokens=int(g_cfg.get("max_tokens", 512)),
-        )
-        
-        final_answer = prefix + ans
+        evidence_texts = retrieval_out.evidence
+
+        # Generation/Synthesis Phase
+        if is_complex or use_multi_hop:
+            agent_in = AgentInput(
+                question=question,
+                context=evidence_texts,
+                metadata=route_config,
+            )
+            agent_out = self.reasoning_agent.run(agent_in)
+            final_answer = agent_out.answer
+        else:
+            agent_in = AgentInput(
+                question=question,
+                context=evidence_texts,
+                metadata=route_config,
+            )
+            agent_out = self.synthesis_agent.run(agent_in)
+            final_answer = agent_out.answer
+            
         return OrchestratorResponse(
-            answer=final_answer, passages=passages, scores=scores,
-            routing_strategy=strategy, complexity=complexity.value if decision else "moderate"
+            answer=final_answer, 
+            passages=passages, 
+            scores=scores,
+            routing_strategy=strategy, 
+            complexity=complexity.value if decision else "moderate"
         )
 
 
@@ -148,9 +165,8 @@ def build_index_from_corpus(cfg: Optional[Dict[str, Any]] = None) -> Path:
 
     chunks = load_corpus(
         corpus_dir,
-        max_tokens=int(ch.get("max_tokens", 256)),
-        overlap_tokens=int(ch.get("overlap_tokens", 30)),
-        model_name=str(ch.get("model_name", "cl100k_base")),
+        max_chars=int(ch.get("max_chars", 900)),
+        overlap_chars=int(ch.get("overlap_chars", 120)),
     )
     records = records_from_chunks(chunks)
     index = DocumentIndex.build(

@@ -108,6 +108,10 @@ def cmd_ablate(args: argparse.Namespace) -> int:
 
 
 def main() -> int:
+    import sys
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+        
     p = argparse.ArgumentParser(description="CDS547 Multi-Agent RAG Orchestrator")
     sub = p.add_subparsers(dest="cmd", required=True)
 
