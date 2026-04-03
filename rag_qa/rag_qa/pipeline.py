@@ -18,6 +18,7 @@ from rag_qa.prompts import (
 )
 # Import new Agent framework components
 from rag_qa.agents import AgentInput, RetrievalAgent, RouteAgent, QuestionComplexity, ReasoningAgent, SynthesisAgent
+from rag_qa.agents.critic_agent import CriticAgent
 
 logger = logging.getLogger(__name__)
 
@@ -29,13 +30,15 @@ class OrchestratorResponse:
     scores: List[float]
     routing_strategy: str
     complexity: str
+    trace: str = "" # To expose the inner thoughts
+    telemetry: dict = None
 
 
 class MultiAgentOrchestrator:
     """
     Main Orchestrator for the Multi-Agent RAG System.
     Uses the RouteAgent to classify questions and directs them to the 
-    appropriate specialized agents (or legacy pipeline logic temporarily).
+    appropriate specialized agents.
     """
 
     def __init__(self, index: DocumentIndex, cfg: Dict[str, Any]) -> None:
@@ -53,13 +56,20 @@ class MultiAgentOrchestrator:
         self.synthesis_agent = SynthesisAgent(
             model=g_cfg.get("openai_model"),
             temperature=float(g_cfg.get("temperature", 0.2)),
-            max_tokens=int(g_cfg.get("max_tokens", 512)),
+            max_tokens=int(g_cfg.get("max_tokens", 2048)),
         )
         
         self.reasoning_agent = ReasoningAgent(
             model=g_cfg.get("openai_model"),
             temperature=float(g_cfg.get("temperature", 0.2)),
-            max_tokens=int(g_cfg.get("max_tokens", 1024)),
+            max_tokens=int(g_cfg.get("max_tokens", 2048)),
+        )
+        
+        # New Critic Agent
+        self.critic_agent = CriticAgent(
+            model=g_cfg.get("openai_model"),
+            temperature=0.1,
+            max_tokens=int(g_cfg.get("max_tokens", 2048)),
         )
 
     @classmethod
@@ -78,81 +88,148 @@ class MultiAgentOrchestrator:
         top_k = int(r_cfg.get("top_k", 5))
         mode = r_cfg.get("mode", "dense")
         hybrid_w = float(r_cfg.get("hybrid_bm25_weight", 0.35))
+        
+        telemetry = {"total_latency": 0.0, "total_prompt_tokens": 0, "total_completion_tokens": 0}
+        def _add_tel(t):
+            if t:
+                telemetry["total_latency"] += t.get("total_latency", t.get("latency", 0))
+                telemetry["total_prompt_tokens"] += t.get("total_prompt_tokens", t.get("prompt_tokens", 0))
+                telemetry["total_completion_tokens"] += t.get("total_completion_tokens", t.get("completion_tokens", 0))
 
         # 1. Routing phase
         if not use_routing:
-            # Fallback to standard RAG if routing is disabled
             decision = None
             complexity = QuestionComplexity.MODERATE
             strategy = "single_hop_rag (routing disabled)"
-            route_config = {
-                "use_multi_hop": False,
-                "strategy_name": strategy,
-            }
+            route_config = {"use_multi_hop": False, "strategy_name": strategy}
         else:
             decision, route_config = self.route_agent.route(question)
             complexity = decision.complexity
             strategy = route_config["strategy_name"]
+            _add_tel(decision.telemetry)
 
         # 2. Execution phase based on Route Decision
         
         if complexity == QuestionComplexity.SIMPLE:
-            # No retrieval needed, answer directly
             ans = generate_chat(
                 no_context_system_prompt(),
                 no_context_user_prompt(question),
                 model=g_cfg.get("openai_model"),
                 temperature=float(g_cfg.get("temperature", 0.2)),
-                max_tokens=int(g_cfg.get("max_tokens", 512)),
+                max_tokens=int(g_cfg.get("max_tokens", 2048)),
             )
+            try:
+                # Try parsing JSON if simple mode used it
+                import json
+                ans_dict = json.loads(re.search(r'\{.*\}', ans, re.DOTALL).group())
+                exact_ans = ans_dict.get("exact_answer", ans)
+                trace_str = ans_dict.get("thought_process", "")
+            except:
+                exact_ans = ans
+                trace_str = ""
             return OrchestratorResponse(
-                answer=ans, passages=[], scores=[], 
-                routing_strategy=strategy, complexity=complexity.value
+                answer=exact_ans, passages=[], scores=[], 
+                routing_strategy=strategy, complexity=complexity.value,
+                trace=trace_str, telemetry=telemetry
             )
             
-        # Retrieval Phase (handles both MODERATE and COMPLEX dynamically)
         is_complex = (complexity == QuestionComplexity.COMPLEX)
         use_multi_hop = bool(route_config.get("use_multi_hop", False))
         
-        retrieval_in = AgentInput(
-            question=question,
-            metadata={
-                "top_k": top_k,
-                "mode": mode,
-                "hybrid_bm25_weight": hybrid_w,
-                "complexity": complexity.value if decision else "moderate",
-                "use_multi_hop": use_multi_hop,
-            },
-        )
-        retrieval_out = self.retrieval_agent.run(retrieval_in)
-        passages = retrieval_out.metadata.get("passages", [])
-        scores = retrieval_out.metadata.get("scores", [])
-        evidence_texts = retrieval_out.evidence
-
-        # Generation/Synthesis Phase
+        scratchpad_trace = ""
+        passages = []
+        scores = []
+        
         if is_complex or use_multi_hop:
-            agent_in = AgentInput(
-                question=question,
-                context=evidence_texts,
-                metadata=route_config,
-            )
-            agent_out = self.reasoning_agent.run(agent_in)
-            final_answer = agent_out.answer
-        else:
-            agent_in = AgentInput(
-                question=question,
-                context=evidence_texts,
-                metadata=route_config,
-            )
-            agent_out = self.synthesis_agent.run(agent_in)
-            final_answer = agent_out.answer
+            # ReAct Loop for Complex Questions!
+            # Attach retriever lambda
+            def _fetcher(q, top_k=3):
+                ret_out = self.retrieval_agent.run(AgentInput(
+                    question=q, 
+                    metadata={"top_k": top_k, "mode": mode, "hybrid_bm25_weight": hybrid_w}
+                ))
+                return ret_out.evidence
+                
+            self.reasoning_agent.set_retriever(_fetcher)
             
+            critic_feedback = ""
+            max_loops = 2
+            
+            for loop_i in range(max_loops):
+                # 1. Planner & Worker Phase
+                agent_in = AgentInput(
+                    question=question,
+                    metadata={
+                        "scratchpad_trace": scratchpad_trace,
+                        "critic_feedback": critic_feedback
+                    }
+                )
+                reason_out = self.reasoning_agent.run(agent_in)
+                scratchpad_trace = reason_out.metadata["full_trace"]
+                _add_tel(reason_out.metadata.get("telemetry", {}))
+                
+                # 2. Critic Phase
+                critic_in = AgentInput(
+                    question=question, 
+                    metadata={"scratchpad_trace": scratchpad_trace}
+                )
+                critic_out = self.critic_agent.run(critic_in)
+                critic_feedback = critic_out.metadata["critic_feedback"]
+                _add_tel(critic_out.metadata.get("telemetry", {}))
+                
+                scratchpad_trace += f"\n\n[Critic Evaluation Loop {loop_i+1}]: {critic_feedback}\n\n"
+                
+                if not critic_out.should_retry:
+                    # Critic approved!
+                    break
+                    
+            final_context = [scratchpad_trace]
+            
+        else:
+            # Moderate - Single Hop RAG Pipeline
+            retrieval_in = AgentInput(
+                question=question,
+                metadata={
+                    "top_k": top_k, "mode": mode, "hybrid_bm25_weight": hybrid_w,
+                    "complexity": complexity.value, "use_multi_hop": False
+                },
+            )
+            retrieval_out = self.retrieval_agent.run(retrieval_in)
+            passages = retrieval_out.metadata.get("passages", [])
+            scores = retrieval_out.metadata.get("scores", [])
+            final_context = retrieval_out.evidence
+            scratchpad_trace = "Single-hop retrieved. No reasoning trace.\n"
+
+        # Synthesis Phase
+        agent_in = AgentInput(
+            question=question,
+            context=final_context,
+            metadata=route_config,
+        )
+        agent_out = self.synthesis_agent.run(agent_in)
+        raw_final_json_str = agent_out.answer 
+        _add_tel(agent_out.metadata.get("telemetry", {})) 
+        
+        # Safely parse exact answer
+        import json
+        try:
+            parsed = json.loads(raw_final_json_str)
+            final_answer = parsed.get("exact_answer", raw_final_json_str)
+            final_thoughts = parsed.get("thought_process", "")
+        except:
+            final_answer = raw_final_json_str
+            final_thoughts = ""
+            
+        combined_trace = scratchpad_trace + f"\n\n[Final Synthesis Thoughts]:\n{final_thoughts}"
+
         return OrchestratorResponse(
             answer=final_answer, 
             passages=passages, 
             scores=scores,
             routing_strategy=strategy, 
-            complexity=complexity.value if decision else "moderate"
+            complexity=complexity.value if decision else "moderate",
+            trace=combined_trace,
+            telemetry=telemetry,
         )
 
 

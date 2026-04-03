@@ -53,7 +53,7 @@ class SynthesisAgent(BaseAgent):
         self,
         model: Optional[str] = None,
         temperature: float = 0.2,
-        max_tokens: int = 1024,
+        max_tokens: int = 2048,
         max_reflection_iterations: int = 2,
         confidence_threshold: float = 0.7,
     ):
@@ -100,12 +100,16 @@ class SynthesisAgent(BaseAgent):
             confidence_scores=[],
         )
         
+        # Build synthesis telemetry
+        telemetry = {"total_latency": 0.0, "total_prompt_tokens": 0, "total_completion_tokens": 0}
+
         # Perform synthesis with self-reflection
         final_answer, evidence, confidence, should_retry = self._synthesize_with_reflection(
             question=question,
             context=synthesis_context,
             sub_questions=sub_questions,
             metadata=metadata,
+            telemetry=telemetry,
         )
         
         return AgentOutput(
@@ -117,6 +121,7 @@ class SynthesisAgent(BaseAgent):
                 "synthesis_iterations": len(synthesis_context.reasoning_steps),
                 "contradictions_found": len(synthesis_context.contradictions),
                 "confidence_history": synthesis_context.confidence_scores,
+                "telemetry": telemetry,
             },
         )
     
@@ -126,6 +131,7 @@ class SynthesisAgent(BaseAgent):
         context: SynthesisContext,
         sub_questions: List[str],
         metadata: Dict[str, Any],
+        telemetry: Dict[str, Any],
     ) -> Tuple[str, List[str], float, bool]:
         """
         Perform synthesis with iterative self-reflection.
@@ -135,6 +141,7 @@ class SynthesisAgent(BaseAgent):
             context: Synthesis context with passages and reasoning
             sub_questions: Decomposed sub-questions (if any)
             metadata: Additional metadata
+            telemetry: Tracker dict to aggregate metrics
             
         Returns:
             Tuple of (final_answer, evidence, confidence, should_retry)
@@ -144,22 +151,34 @@ class SynthesisAgent(BaseAgent):
         best_evidence = []
         best_confidence = 0.0
         
+        def _add_tel(t: dict):
+            if t:
+                telemetry["total_latency"] += t.get("latency", 0)
+                telemetry["total_prompt_tokens"] += t.get("prompt_tokens", 0)
+                telemetry["total_completion_tokens"] += t.get("completion_tokens", 0)
+        
         while current_iteration < self.max_reflection_iterations:
             # Generate answer
+            ans_tracker = {"agent_name": f"Synthesis (Gen {current_iteration})"}
             answer, evidence = self._generate_answer(
                 question=question,
                 passages=context.retrieved_passages,
                 sub_questions=sub_questions,
                 previous_attempts=context.intermediate_answers,
+                tracker=ans_tracker,
             )
+            _add_tel(ans_tracker)
             
             # Perform self-reflection
+            ref_tracker = {"agent_name": f"Synthesis (Reflect {current_iteration})"}
             reflection = self._reflect(
                 question=question,
                 answer=answer,
                 evidence=evidence,
                 passages=context.retrieved_passages,
+                tracker=ref_tracker,
             )
+            _add_tel(ref_tracker)
             
             # Update context
             context.intermediate_answers.append(answer)
@@ -196,6 +215,7 @@ class SynthesisAgent(BaseAgent):
         passages: List[str],
         sub_questions: List[str],
         previous_attempts: List[str],
+        tracker: dict,
     ) -> Tuple[str, List[str]]:
         """
         Generate answer by synthesizing evidence from passages.
@@ -205,6 +225,7 @@ class SynthesisAgent(BaseAgent):
             passages: Retrieved passages
             sub_questions: Sub-questions (if multi-hop)
             previous_attempts: Previous answer attempts (for retry)
+            tracker: Telemetry tracker
             
         Returns:
             Tuple of (answer, evidence_list)
@@ -226,6 +247,7 @@ class SynthesisAgent(BaseAgent):
                 model=self.model,
                 temperature=self.temperature,
                 max_tokens=self.max_tokens,
+                tracker=tracker,
             )
             
             # Parse response to extract answer and evidence
@@ -242,6 +264,7 @@ class SynthesisAgent(BaseAgent):
         answer: str,
         evidence: List[str],
         passages: List[str],
+        tracker: dict,
     ) -> ReflectionResult:
         """
         Perform self-reflection on the generated answer.
@@ -257,6 +280,7 @@ class SynthesisAgent(BaseAgent):
             answer: Generated answer
             evidence: Evidence used
             passages: All retrieved passages
+            tracker: Telemetry tracker
             
         Returns:
             ReflectionResult with evaluation
@@ -281,7 +305,8 @@ Evaluate the answer quality and provide your assessment in JSON format."""
                 user=user_prompt,
                 model=self.model,
                 temperature=0.1,  # Low temperature for consistent evaluation
-                max_tokens=512,
+                max_tokens=2048,
+                tracker=tracker,
             )
             
             return self._parse_reflection_response(response)
@@ -298,40 +323,19 @@ Evaluate the answer quality and provide your assessment in JSON format."""
     
     def _get_synthesis_prompt(self) -> str:
         """Get the system prompt for answer synthesis."""
-        return """You are a Synthesis Agent in a Multi-Agent RAG system. Your task is to integrate evidence from multiple sources and generate a comprehensive, accurate answer.
-
-## Your Responsibilities
-
-1. **Evidence Integration**: Synthesize information from all provided passages
-2. **Contradiction Resolution**: Identify and resolve contradictions between sources
-3. **Citation**: Cite the passages you use (by their index numbers)
-4. **Completeness**: Ensure all aspects of the question are addressed
-5. **Clarity**: Present the answer in a clear, well-structured format
-
-## Guidelines
-
-- Use only the information from the provided passages
-- If passages contain conflicting information, acknowledge it and explain your resolution
-- Cite passages using [1], [2], etc. format
-- If the information is insufficient, state this clearly
-- For multi-hop questions, show the reasoning chain
-
-## Output Format
-
-Provide your answer in this format:
-
-**Answer:**
-[Your synthesized answer with citations]
-
-**Evidence Used:**
-[List the indices of passages you cited, e.g., 1, 3, 5]
-
-**Reasoning:**
-[Brief explanation of how you synthesized the information]"""
+        from rag_qa.prompts import json_format_instructions
+        return (
+            "You are a Synthesis Agent in a Multi-Agent RAG system. Your task is to integrate evidence from multiple sources and generate a comprehensive, accurate answer.\n\n"
+            "## Your Responsibilities\n"
+            "1. **Evidence Integration**: Synthesize information from all provided passages\n"
+            "2. **Contradiction Resolution**: Identify and resolve contradictions between sources\n"
+            "3. **Citation**: Cite the passages you use (by their index numbers)\n\n"
+            + json_format_instructions()
+        )
     
     def _get_reflection_prompt(self) -> str:
         """Get the system prompt for self-reflection."""
-        return """You are a Self-Reflection module for a Synthesis Agent. Your task is to critically evaluate the quality of a generated answer.
+        return """You are a Self-Reflection module for a Synthesis Agent. Your task is to critically evaluate the quality of a generated JSON answer output.
 
 ## Evaluation Criteria
 
@@ -349,17 +353,13 @@ Respond with a JSON object in this exact format:
 {
   "is_satisfactory": true/false,
   "confidence": 0.85,
-  "issues": ["List any problems or concerns"],
-  "suggestions": ["Suggestions for improvement if retry is needed"],
+  "issues": ["List any problems. MUST be < 10 words."],
+  "suggestions": ["Suggestions if retry. MUST be < 10 words."],
   "should_retry": true/false
 }
 ```
-
-- `is_satisfactory`: Whether the answer is good enough to return
-- `confidence`: Your confidence score (0.0 to 1.0)
-- `issues`: List of specific problems found
-- `suggestions`: How to improve if retrying
-- `should_retry`: Whether the system should try to generate a better answer"""
+CRITICAL: Do not write paragraphs or copy context. Keep the issues and suggestions strictly under 10 words.
+"""
     
     def _build_synthesis_user_prompt(
         self,
@@ -390,7 +390,7 @@ Respond with a JSON object in this exact format:
                 prompt_parts.append(f"Attempt {i}: {attempt[:200]}...")
             prompt_parts.append("")
         
-        prompt_parts.append("Please provide your synthesized answer following the format in the system instructions.")
+        prompt_parts.append("Please provide your synthesized answer strictly following the JSON format in the system instructions.")
         
         return "\n".join(prompt_parts)
     
@@ -410,38 +410,51 @@ Respond with a JSON object in this exact format:
         return "\n".join(f"- {e[:200]}..." for e in evidence)
     
     def _parse_synthesis_response(self, response: str, passages: List[str]) -> Tuple[str, List[str]]:
-        """Parse the synthesis response to extract answer and evidence."""
+        """Parse the synthesis JSON response to extract exact_answer and citations."""
         answer = response
         evidence = []
+        thought_process = ""
         
-        # Try to extract evidence indices
-        evidence_pattern = r"\*\*Evidence Used:\*\*\s*([\d,\s]+)"
-        evidence_match = re.search(evidence_pattern, response)
-        
-        if evidence_match:
-            # Extract indices
-            indices_str = evidence_match.group(1)
-            indices = [int(x.strip()) for x in indices_str.split(",") if x.strip().isdigit()]
+        try:
+            # Extract JSON from response
+            json_match = re.search(r'\{.*\}', response, re.DOTALL)
+            if json_match:
+                data = json.loads(json_match.group())
+            else:
+                data = json.loads(response)
+                
+            exact_answer = data.get("exact_answer", "")
+            thought_process = data.get("thought_process", "")
+            citations = data.get("citations", [])
             
-            # Map indices to passages
-            for idx in indices:
-                if 1 <= idx <= len(passages):
-                    evidence.append(passages[idx - 1])
-        else:
-            # Fallback: extract cited passages from answer text
-            citation_pattern = r"\[(\d+)\]"
-            citations = re.findall(citation_pattern, response)
-            indices = [int(c) for c in set(citations)]
-            for idx in indices:
-                if 1 <= idx <= len(passages):
-                    evidence.append(passages[idx - 1])
-        
-        # Clean up the answer (remove the structured sections if present)
-        answer = re.sub(r"\*\*Evidence Used:\*\*.*?(?=\n\n|\Z)", "", answer, flags=re.DOTALL)
-        answer = re.sub(r"\*\*Reasoning:\*\*.*?(?=\n\n|\Z)", "", answer, flags=re.DOTALL)
-        answer = re.sub(r"\*\*Answer:\*\*", "", answer)
-        answer = answer.strip()
-        
+            # Map citation indices to passages
+            for cite in citations:
+                # find numbers in citation strings like "[1]", "1"
+                nums = re.findall(r'\d+', str(cite))
+                for num in nums:
+                    idx = int(num)
+                    if 1 <= idx <= len(passages):
+                        evidence.append(passages[idx - 1])
+            
+            # We must return a structured payload in 'answer' to pass upward to be parsed
+            # We'll pack it into a JSON string so pipeline can extract exactly what it needs.
+            answer = json.dumps({
+                "exact_answer": exact_answer,
+                "thought_process": thought_process
+            }, ensure_ascii=False)
+            
+        except Exception as e:
+            fallback_answer = response.strip()
+            match = re.search(r'"exact_answer"\s*:\s*"([^"]+)"', response, re.IGNORECASE)
+            if match:
+                fallback_answer = match.group(1).strip()
+                
+            # Fallback for failing JSON parse
+            answer = json.dumps({
+                "exact_answer": fallback_answer,
+                "thought_process": "Fallback parse. Failed to parse valid JSON."
+            }, ensure_ascii=False)
+            
         return answer, evidence
     
     def _parse_reflection_response(self, response: str) -> ReflectionResult:

@@ -32,6 +32,7 @@ class RouteDecision:
     confidence: float           # Confidence score (0.0 - 1.0)
     reasoning: str              # Explanation for the routing decision
     recommended_strategy: str   # Specific strategy recommendation
+    telemetry: Dict[str, Any] = None # Tracks agent latency and tokens
     
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -39,6 +40,7 @@ class RouteDecision:
             "confidence": self.confidence,
             "reasoning": self.reasoning,
             "recommended_strategy": self.recommended_strategy,
+            "telemetry": self.telemetry or {},
         }
     
     @classmethod
@@ -48,6 +50,7 @@ class RouteDecision:
             confidence=float(data.get("confidence", 0.5)),
             reasoning=str(data.get("reasoning", "")),
             recommended_strategy=str(data.get("recommended_strategy", "")),
+            telemetry=data.get("telemetry", {}),
         )
 
 
@@ -88,7 +91,7 @@ class RouteAgent:
         self,
         model: Optional[str] = None,
         temperature: float = 0.1,
-        max_tokens: int = 512,
+        max_tokens: int = 2048,
     ):
         """
         Initialize RouteAgent.
@@ -114,6 +117,7 @@ class RouteAgent:
         """
         system_prompt = self._get_classification_prompt()
         user_prompt = f"Question: {question}\n\nProvide your classification in the requested JSON format."
+        tracker = {"agent_name": "RouteAgent"}
         
         try:
             response = generate_chat(
@@ -122,10 +126,12 @@ class RouteAgent:
                 model=self.model,
                 temperature=self.temperature,
                 max_tokens=self.max_tokens,
+                tracker=tracker,
             )
             
             # Parse the JSON response
             decision = self._parse_classification_response(response)
+            decision.telemetry = tracker
             return decision
             
         except Exception as e:
@@ -135,6 +141,7 @@ class RouteAgent:
                 confidence=0.5,
                 reasoning=f"Classification failed: {str(e)}. Defaulting to moderate complexity.",
                 recommended_strategy=self.ROUTING_STRATEGIES[QuestionComplexity.MODERATE]["name"],
+                telemetry=tracker,
             )
     
     def route(self, question: str) -> Tuple[RouteDecision, Dict[str, Any]]:
@@ -186,9 +193,9 @@ class RouteAgent:
    - Examples: "What does RAG condition the generator on?", "What architecture did Vaswani et al. propose?"
    - Characteristics: Need specific information from documents, single information source, direct answer exists
 
-3. **COMPLEX**: Questions requiring multi-hop reasoning or connecting multiple pieces of information.
-   - Examples: "Compare the approaches of Lewis et al. and Vaswani et al. on transformer architectures", "What are the implications of the technique introduced in paper X on the evaluation method from paper Y?"
-   - Characteristics: Multiple reasoning steps, comparison/synthesis required, implicit connections, temporal reasoning
+3. **COMPLEX**: Questions requiring multi-hop reasoning or connecting multiple pieces of information. This includes "Bridging" or "Intersection" questions where uncovering one entity is required to search for another.
+   - Examples: "Were Scott Derrickson and Ed Wood of the same nationality?", "What government position was held by the woman who portrayed X in the film Y?", "Compare the approaches of Lewis and Vaswani."
+   - Characteristics: Multiple reasoning steps, comparison/synthesis required, implicit connections, bridging via an intermediate entity.
 
 ## Classification Guidelines
 

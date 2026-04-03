@@ -18,6 +18,5 @@ embedding:
   model_name: sentence-transformers/all-MiniLM-L6-v2
 
 generation:
-  openai_model: gpt-4o-mini
   temperature: 0.2
-  max_tokens: 512
+  max_tokens: 2048
